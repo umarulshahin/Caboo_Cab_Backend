@@ -35,12 +35,10 @@ def Image_Upload(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])    
 def GetUser(request):
-    print('yes here is working ')
     user = request.user
     data=CustomUser.objects.filter(email=user,is_active=True)
     if data:
         serializer=UserSerializer(data,many=True)
-        print(serializer.data,'user side')
         return Response(serializer.data)
 
     
@@ -73,7 +71,6 @@ def Payment(request):
     try:
       data=request.data
       amount = data
-      print(amount,'amount')
       
       secret_key = settings.RAZORPAY_SECRET_KEY  
       public_key = settings.RAZORPAY_PUBLIC_KEY
@@ -85,7 +82,6 @@ def Payment(request):
             payment = client.order.create({"amount": int(amount) * 100, 
                                         "currency": "INR", 
                                         "payment_capture": "1"})
-            print(payment,'payment ')
             return Response(payment)
       return Response({"error": "The minimum amount must be at least ₹1."},status=status.HTTP_400_BAD_REQUEST)
      
@@ -108,7 +104,6 @@ def PaymentSuccess(request):
                     "reason":"Wallet recharge",
                     "status":"add"
                 }
-                print(data,'data creation')
                 serialize = WalletSerializer(data=data)
                 if serialize.is_valid():
                     serialize.save()
