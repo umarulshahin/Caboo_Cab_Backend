@@ -9,6 +9,11 @@ import asyncio
 from django.db.models import *
 import traceback
 from django.utils import timezone
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 
 class LocationConsumer(AsyncJsonWebsocketConsumer):
     user_data = {}
@@ -28,19 +33,30 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
             print(f'driver rating error {e}')
     
     @sync_to_async
-    def get_tripdata(self,trip_id):
+    def get_tripdata(self,data):
        from User_app.models import TripDetails
-       
+      
        try:
-           trip_data=TripDetails.objects.filter(id=trip_id).first()
-           print(trip_data,"trip data get")
+           if data['trip_id'] != None:
+               trip_id = data['trip_id']
+               trip_data=TripDetails.objects.filter(id=trip_id).first()
+           else:
+               
+                driver_id = data['Otp_data']['driver_id']
+                otp = data['Otp_data']['otp']    
+                
+                trip_data=TripDetails.objects.filter(driver_id=driver_id,tripOTP=otp).last()
+
+          
            data={
                "user_id":trip_data.user_id,
-               "driver_id":trip_data.driver_id
+               "driver_id":trip_data.driver_id,
+               "trip_id" : trip_data.id,
            }
            return data
        except Exception as e:
            print(f"get trip data error {e}")  
+           return None
       
     
     @sync_to_async
@@ -175,7 +191,6 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
     
     @sync_to_async
     def Get_driverdata(self, data):
-        print(data, 'call is coming get driver data')
         from Authentication_app.models import CustomUser, DriverData
         
         try:
@@ -283,6 +298,7 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
     def uservalidate(self,user_id):
         CustomUser = apps.get_model('Authentication_app', 'CustomUser')
         try:
+            print(user_id,'user id in user validation')
             return CustomUser.objects.filter(id=user_id,is_active=True).exists()
         
         except Exception as e:
@@ -345,11 +361,12 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
         if user_type and self.user_id:
             await self.channel_layer.group_add(f'{user_type}_{self.user_id}', self.channel_name)
             print(f'Added to group: {user_type}_{self.user_id}')
+            logger.info(f'Added to group: {user_type}_{self.user_id}')
             result = await self.uservalidate(self.user_id)
             print(result,'result of the user validation ')
+            
             if not result:
-                
-                 await self.channel_layer.group_send(
+                await self.channel_layer.group_send(
                             f'{user_type}_{self.user_id}', 
                             {
                                 'type': 'BlockNotification',
@@ -358,7 +375,6 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
                             }
                         )
             # current_ride = await self.Current_ride_check(self.user_id)
-            # print(current_ride,'current ride')
             # if current_ride:
                 
             #      await self.channel_layer.group_send(
@@ -443,17 +459,12 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
                         id = result['trip_data']['id']
 
                         driver_id = result['trip_data']['driver']
-                        print(driver_id,'request notification for driver')
                         
                         LocationConsumer.drivers_distance.clear()
                         
                         user_id = result['trip_data']['user']
                         rating = await self.driver_rating(driver_id)
                         
-                        print(id,'trip id ')
-
-                        print(driver_id,'driver id ')
-                        print(user_id,'user id ')
                         await self.channel_layer.group_send(
                             f'driver_{driver_id}',
                             {
@@ -464,7 +475,6 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
                         
                         await asyncio.sleep(3)  
                         
-                        print(id,'trip id ')
                         await self.channel_layer.group_send(
                             f'user_{user_id}', 
                             {
@@ -503,7 +513,9 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
             elif 'Otp_data' in data:
                 
                 result = await self.otp_validate(data)
-                trip_data = await self.get_tripdata(data['trip_id'])
+                
+                trip_data = await self.get_tripdata(data)
+                
                                 
                 if 'tripOTP' in result and 'driver' in result and trip_data:
                     
@@ -515,6 +527,7 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
                                         'type': 'SuccessNotification',
                                         'status': 'OTP_success',
                                         'message': 'OTP validation succeeded. Trip is confirmed.',
+                                        
                                     }
                                 )
                             
@@ -526,6 +539,7 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
                                 'type' : 'SuccessNotification',
                                 'status': 'OTP_success',
                                 'message': 'OTP validation succeeded. You can start the trip.',
+                                'trip_id' : trip_data['trip_id'],
 
                             }  
                             )
@@ -545,7 +559,7 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
             elif 'ride_complete' in data:
                 
                 result = await self.Trip_update("completed",data['trip_id'])
-                trip_data = await self.get_tripdata(data['trip_id'])
+                trip_data = await self.get_tripdata({'trip_id':data['trip_id']})
                 print(trip_data,'trip completed')
                 coupons = await self.get_coupons(trip_data['user_id'])
                 
@@ -561,8 +575,8 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
                         )
                 
             elif 'userRequest' in data and 'payment_type' in data['userRequest']:
-                                
-                    trip_data = await self.get_tripdata(data['userRequest']['trip_id'])
+                    
+                    trip_data = await self.get_tripdata({'trip_id':data['userRequest']['trip_id']})
 
                     if data['userRequest']['payment_type']=='cashinhand' and trip_data:
                         print(data,'cash in hand ')
@@ -653,7 +667,7 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
                 #     print(coupon_id,'coupon_id')
                     
                 result = await self.Trip_update({'payment_type' : data['payment received'],'status': 'completed'},data['trip_id'],coupon_id)
-                trip_data = await self.get_tripdata(data['trip_id'])
+                trip_data = await self.get_tripdata({'trip_id':data['trip_id']})
                 if result == 'successfully update' and trip_data:
                     data = {
                     'ride':False
@@ -677,7 +691,7 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
                 result = await self.Trip_update("cancelled",trip_id)
                 if result == 'successfully update':
                     print('yes its working inside ')
-                    ids= await self.get_tripdata(trip_id)
+                    ids= await self.get_tripdata({'trip_id':trip_id})
                     if ids:
                         data = {
                             'ride':False
@@ -700,11 +714,11 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
                     
             elif 'drivertripcancel' in data:
                
-                trip_id=data['trip_id']
-                result = await self.Trip_update("cancelled",trip_id)
+                
+                result = await self.Trip_update("cancelled",data['trip_id'])
                 
                 if result == 'successfully update':
-                    ids= await self.get_tripdata(trip_id)
+                    ids= await self.get_tripdata({'trip_id':data['trip_id']})
                     data = {
                             'ride':False
                         }
@@ -884,20 +898,27 @@ class LocationConsumer(AsyncJsonWebsocketConsumer):
             }
         )
     async def SuccessNotification(self, event):
-        print('yes success notification is working')
+     
+        if 'trip_id' in event:
+            trip_id = event.get('trip_id')
+        else: 
+            trip_id = None
+        
         await self.send(text_data=json.dumps({
             'type': event['status'],
             'message': event['message'],
+            'trip_id' : trip_id 
         }))
     
     async def notify_driver(self,event):
-        print(event,'driver notify is working')
+        
         await self.send(text_data=json.dumps({
             'type': 'ride_accepted',
             'data': event
         }))
     
     async def BlockNotification(self,event):
+        logger.info(f"BlockNotification: {event}")
         print("block notification is working")
         await self.send(text_data=json.dumps({
             'type': 'block notification',
